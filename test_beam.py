@@ -14,10 +14,7 @@ from generator import BeamSearchGenerator, DBSGenerator
 def parse_args():
     parser = argparse.ArgumentParser()
     # model configs
-    parser.add_argument('--beta', type=float, default=1.0)
-    parser.add_argument('--n_emo_embd', type=int, default=768)
     parser.add_argument('--clf_hs', nargs='+', type=int, default=[])
-    parser.add_argument('--tieSL', default=False, action='store_true')
     # generation configs
     parser.add_argument('--max_gen_len', type=int, default=50)
     parser.add_argument('--beam_size', type=int, default=5)
@@ -48,7 +45,6 @@ if __name__ == '__main__':
 
     # model configs
     cfg = DEFAULT_MODEL_CFG
-    cfg.n_emo_embd = args.n_emo_embd
     cfg.clf_hs = args.clf_hs
     # indexer
     indexer = Indexer(cfg.n_ctx)
@@ -58,8 +54,7 @@ if __name__ == '__main__':
     # test instances whose contexts' length are longer than 256 are filtered out
     testset.filter_by_idxs(np.load(args.test_id_filter_path))
 
-    model = ELMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx, indexer,
-                     args.beta, tieSL=args.tieSL)
+    model = ELMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx, indexer)
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     logger.log('Model params: %d' % count_parameters(model))
     model.to(device)

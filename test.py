@@ -16,10 +16,7 @@ from generator_specemo import BeamSearchGenerator as SpecBeamSearchGenerator
 def parse_args():
     parser = argparse.ArgumentParser()
     # model configs
-    parser.add_argument('--beta', type=float, default=1.0)
-    parser.add_argument('--n_emo_embd', type=int, default=768)
     parser.add_argument('--clf_hs', nargs='+', type=int, default=[])
-    parser.add_argument('--tieSL', default=False, action='store_true')
     # generation configs
     parser.add_argument('--max_gen_len', type=int, default=50)
     parser.add_argument('--beam_size', type=int, default=5)
@@ -27,7 +24,6 @@ def parse_args():
     parser.add_argument('--dbs_groups', type=int, default=5)
     parser.add_argument('--dbs_lambda', type=int, default=0.5)
     # other configs
-    parser.add_argument('--oracle', default=False, action='store_true')
     parser.add_argument('--model_path', type=str, default='save/memp/b1_std002_h768')
     parser.add_argument('--print_to', type=str, default='file')
     parser.add_argument('--log_dir', type=str, default='log/')
@@ -53,7 +49,6 @@ if __name__ == '__main__':
 
     # model configs
     cfg = DEFAULT_MODEL_CFG
-    cfg.n_emo_embd = args.n_emo_embd
     cfg.clf_hs = args.clf_hs
     # indexer
     indexer = Indexer(cfg.n_ctx)
@@ -66,18 +61,14 @@ if __name__ == '__main__':
         testset.filter_by_idxs(np.load(args.testid_sample_path))
 
     # load model
-    model = ELMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx, indexer,
-                     args.beta, tieSL=args.tieSL)
+    model = ELMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx, indexer)
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     logger.log('Model params: %d' % count_parameters(model))
     model.to(device)
 
     # different generators
     # gen_greedy = GreedyGenerator(model, args.max_gen_len, indexer, device)
-    if args.oracle:
-        gen_BS = SpecBeamSearchGenerator(model, args.max_gen_len, indexer, device, args.beam_size)
-    else:
-        gen_BS = BeamSearchGenerator(model, args.max_gen_len, indexer, device, args.beam_size)
+    gen_BS = BeamSearchGenerator(model, args.max_gen_len, indexer, device, args.beam_size)
     # gen_DBS = DBSGenerator(model, args.max_gen_len, indexer, device, args.dbs_beam_size, args.dbs_groups, args.dbs_lambda)
 
     #################### test ####################
@@ -101,10 +92,7 @@ if __name__ == '__main__':
             resp_golden.append(golden)
             # beam search
             logstr.append('[Beam=%d]:' % args.beam_size)
-            if args.oracle:
-                beam_resp, _ = gen_BS.generate(b['emotion'][0].item(), b['dialog'], b['dialog_state'])
-            else:
-                beam_resp, _ = gen_BS.generate(b['clf_idx'], b['dialog'], b['dialog_state'])
+            beam_resp, _ = gen_BS.generate(b['clf_idx'], b['dialog'], b['dialog_state'])
             resp_beam.append(beam_resp)
             logstr.append(' - ' + beam_resp)
             # # diverse beam search

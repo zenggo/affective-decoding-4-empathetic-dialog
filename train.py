@@ -17,11 +17,7 @@ from indexer import Indexer
 def parse_args():
     parser = argparse.ArgumentParser()
     # model configs
-    parser.add_argument('--beta', type=float, default=1.0)
-    parser.add_argument('--n_emo_embd', type=int, default=768)
-    parser.add_argument('--init_std', type=float, default=0.02)
     parser.add_argument('--clf_hs', nargs='+', type=int, default=[])
-    parser.add_argument('--tieSL', default=False, action='store_true')
     # training configs
     parser.add_argument('--n_epoch', type=int, default=3)
     parser.add_argument('--n_batch', type=int, default=8)
@@ -99,7 +95,6 @@ if __name__ == '__main__':
     batch_size = args.n_batch
     # model configs
     cfg = DEFAULT_MODEL_CFG
-    cfg.n_emo_embd = args.n_emo_embd
     cfg.clf_hs = args.clf_hs
     # indexer
     indexer = Indexer(cfg.n_ctx)
@@ -112,8 +107,7 @@ if __name__ == '__main__':
     devset.filter_max_len(indexer.n_ctx)
 
     # create and load pretrained model
-    model = ELMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx, indexer,
-                     args.beta, args.init_std, args.tieSL)
+    model = ELMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx, indexer)
     if not args.no_pretrained:
         load_openai_pretrained_model(model.transformer, cfg,
                                      n_special=indexer.n_special,
