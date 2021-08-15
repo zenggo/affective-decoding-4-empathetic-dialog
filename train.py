@@ -6,9 +6,9 @@ import torch.nn.functional as F
 from tensorboardX import SummaryWriter
 from optimizer import OpenAIAdam
 from configs import DEFAULT_MODEL_CFG, DEFAULT_OPT_CFG
-from model import ELMModel, load_openai_pretrained_model
+from model import LMModel, load_openai_pretrained_model
 from data_loader import load_dataset
-from utils import make_infinite, stack_input, make_path, cal_clf_acc, \
+from utils import make_infinite, stack_input, make_path, \
                 get_time_str, Logger, delete_file, count_parameters
 from time import time
 from indexer import Indexer
@@ -16,8 +16,6 @@ from indexer import Indexer
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    # model configs
-    parser.add_argument('--clf_hs', nargs='+', type=int, default=[])
     # training configs
     parser.add_argument('--n_epoch', type=int, default=3)
     parser.add_argument('--n_batch', type=int, default=8)
@@ -39,39 +37,27 @@ def compute_batch_loss(model, batch):
     # stack token, dialog states and position encoding
     X = stack_input(batch['dialog'], [batch['dialog_state']], indexer)
     X = X.to(device)
-    # compute augmented LM logits and loss
-    lm_logits, _, clf_logits = model(batch['clf_idx'].to(device), X)
-    # calculate language modelling loss
+    # compute LM logits and loss
+    lm_logits, _ = model(X)
     mask = batch['dialog_mask'].to(device)
+    # calculate language modelling loss
     target_shifted = X[:, 1:, 0].contiguous().view(-1)
-    logits_shifted = lm_logits[:, :-1, :]
-    logits_shifted = logits_shifted.contiguous().view(-1, lm_logits.shape[-1])
-    lm_loss = F.cross_entropy(logits_shifted, target_shifted, reduction='none')
+    lm_logits_shifted = lm_logits[:, :-1, :]
+    lm_logits_shifted = lm_logits_shifted.contiguous().view(-1, lm_logits.shape[-1])
+    loss = F.cross_entropy(lm_logits_shifted, target_shifted, reduction='none')
     mask_shifted = mask[:, 1:]
-    lm_loss = torch.sum(lm_loss.view(mask_shifted.shape) * mask_shifted) / torch.sum(mask_shifted)
-    # calculate emotion classification loss
-    emo_label = batch['emotion']
-    clf_loss = F.cross_entropy(clf_logits, emo_label.to(device), reduction='mean')
-    # calculate emotion clf accuracy
-    acc_top1, acc_top5 = cal_clf_acc(clf_logits, emo_label.tolist())
-    # joint loss
-    return lm_loss, clf_loss, (acc_top1, acc_top5)
+    loss = torch.sum(loss.view(mask_shifted.shape) * mask_shifted) / torch.sum(mask_shifted)
+    return loss
 
 
 def validate(model, data):
-    lm_loss = []
-    clf_loss = []
-    acc_1 = []
-    acc_5 = []
+    val_loss = []
     with torch.no_grad():
         model.eval()
         for _, batch in enumerate(data):
-            l, c, a = compute_batch_loss(model, batch)
-            lm_loss.append(l.item())
-            clf_loss.append(c.item())
-            acc_1.append(a[0])
-            acc_5.append(a[1])
-    return np.mean(lm_loss), np.mean(clf_loss), np.mean(acc_1), np.mean(acc_5)
+            l = compute_batch_loss(model, batch)
+            val_loss.append(l.item())
+    return np.mean(val_loss)
 
 
 
@@ -95,7 +81,6 @@ if __name__ == '__main__':
     batch_size = args.n_batch
     # model configs
     cfg = DEFAULT_MODEL_CFG
-    cfg.clf_hs = args.clf_hs
     # indexer
     indexer = Indexer(cfg.n_ctx)
 
@@ -107,7 +92,7 @@ if __name__ == '__main__':
     devset.filter_max_len(indexer.n_ctx)
 
     # create and load pretrained model
-    model = ELMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx, indexer)
+    model = LMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx)
     if not args.no_pretrained:
         load_openai_pretrained_model(model.transformer, cfg,
                                      n_special=indexer.n_special,
@@ -154,17 +139,14 @@ if __name__ == '__main__':
             batch = next(tr_iter)
             model.train()
             # compute loss
-            lm_loss, clf_loss, _ = compute_batch_loss(model, batch)
-            joint_loss = lm_loss + clf_loss
+            loss = compute_batch_loss(model, batch)
             # update
-            joint_loss.backward()
+            loss.backward()
             model_opt.step()
             model_opt.zero_grad()
             # log
-            perplexity = np.exp(min(lm_loss.item(), 100))
-            tb_writer.add_scalars('lm_loss', {'lm_loss_train': lm_loss.item()}, i_iter)
-            tb_writer.add_scalars('clf_loss', {'clf_loss_train': clf_loss.item()}, i_iter)
-            tb_writer.add_scalars('joint_loss', {'joint_loss_train': joint_loss.item()}, i_iter)
+            perplexity = np.exp(min(loss.item(), 100))
+            tb_writer.add_scalars('loss', {'loss_train': loss.item()}, i_iter)
             tb_writer.add_scalars('ppl', {'ppl_train': perplexity}, i_iter)
             if i_iter % print_iter == 0:
                 tmp = i_iter % check_iter
@@ -175,17 +157,11 @@ if __name__ == '__main__':
             if i_iter % check_iter == 0:
                 logger.log('-'*10+'start validation at iter %d' % i_iter)
                 start_time = time()
-                val_lm_loss, val_clf_loss, val_acc_1, val_acc_5 = validate(model, data_loader_dev)
-                val_joint_loss = val_lm_loss + val_clf_loss
-                val_ppl = np.exp(min(val_lm_loss, 100))
-                tb_writer.add_scalars('lm_loss', {'lm_loss_valid': val_lm_loss}, i_iter)
-                tb_writer.add_scalars('clf_loss', {'clf_loss_valid': val_clf_loss}, i_iter)
-                tb_writer.add_scalars('joint_loss', {'joint_loss_valid': val_joint_loss}, i_iter)
+                val_loss = validate(model, data_loader_dev)
+                val_ppl = np.exp(min(val_loss, 100))
+                tb_writer.add_scalars('loss', {'loss_valid': val_loss}, i_iter)
                 tb_writer.add_scalars('ppl', {'ppl_valid': val_ppl}, i_iter)
-                tb_writer.add_scalars('acc_top1', {'acc_1_valid': val_acc_1}, i_iter)
-                tb_writer.add_scalars('acc_top5', {'acc_5_valid': val_acc_5}, i_iter)
-                logger.log('lm_loss=%f, clf_loss=%f, joint_loss=%f' % (val_lm_loss, val_clf_loss, val_joint_loss))
-                logger.log('acc_1=%f, acc_5=%f, ppl=%f' % (val_acc_1, val_acc_5, val_ppl))
+                logger.log('loss=%f, ppl=%f' % (val_loss, val_ppl))
                 logger.log('-'*10+'time for validation: %f' % (time()-start_time))
                 start_time = time()
                 if val_ppl < best_valid_ppl:

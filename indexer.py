@@ -18,8 +18,10 @@ class Indexer:
         # dialog states
         self.DS_SPEAKER_IDX = self.n_vocab + 2
         self.DS_LISTENER_IDX = self.n_vocab + 3
-        # the numbers of special indexs (SOS, EOS, DS_S, DS_L), for input embedding
-        self.n_special = 4
+        # emotion label prepender indicator
+        self.DS_PREP_IDX = self.n_vocab + 4
+        # the numbers of special indexs (SOS, EOS, DS_S, DS_L, DS_PREP), for input embedding
+        self.n_special = 5
         # position indexs
         self.n_ctx = n_ctx
 

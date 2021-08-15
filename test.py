@@ -4,19 +4,16 @@ import random
 import numpy as np
 import torch
 from configs import DEFAULT_MODEL_CFG
-from model import ELMModel
+from model import LMModel
 from indexer import Indexer
 from data_loader import load_dataset
 from utils import get_time_str, Logger, count_parameters, moses_multi_bleu
 from time import time
 from generator import GreedyGenerator, BeamSearchGenerator, DBSGenerator
-from generator_specemo import BeamSearchGenerator as SpecBeamSearchGenerator
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    # model configs
-    parser.add_argument('--clf_hs', nargs='+', type=int, default=[])
     # generation configs
     parser.add_argument('--max_gen_len', type=int, default=50)
     parser.add_argument('--beam_size', type=int, default=5)
@@ -24,7 +21,7 @@ def parse_args():
     parser.add_argument('--dbs_groups', type=int, default=5)
     parser.add_argument('--dbs_lambda', type=int, default=0.5)
     # other configs
-    parser.add_argument('--model_path', type=str, default='save/memp/b1_std002_h768')
+    parser.add_argument('--model_path', type=str, default='save/baseline/transfo')
     parser.add_argument('--print_to', type=str, default='file')
     parser.add_argument('--log_dir', type=str, default='log/')
     parser.add_argument('--log_file', type=str, default='test.output')
@@ -49,7 +46,6 @@ if __name__ == '__main__':
 
     # model configs
     cfg = DEFAULT_MODEL_CFG
-    cfg.clf_hs = args.clf_hs
     # indexer
     indexer = Indexer(cfg.n_ctx)
 
@@ -61,7 +57,7 @@ if __name__ == '__main__':
         testset.filter_by_idxs(np.load(args.testid_sample_path))
 
     # load model
-    model = ELMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx, indexer)
+    model = LMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx)
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     logger.log('Model params: %d' % count_parameters(model))
     model.to(device)
@@ -83,7 +79,7 @@ if __name__ == '__main__':
 
         for (i, b) in enumerate(data_loader):
             logstr = []
-            logstr.append('[Context(%s)]:' % b['data'][0]['emotion'])
+            logstr.append('[Context]:')
             for c in b['data'][0]['context_text']:
                 logstr.append(' - ' + c)
             logstr.append('[Golden]:')
@@ -92,19 +88,19 @@ if __name__ == '__main__':
             resp_golden.append(golden)
             # beam search
             logstr.append('[Beam=%d]:' % args.beam_size)
-            beam_resp, _ = gen_BS.generate(b['clf_idx'], b['dialog'], b['dialog_state'])
+            beam_resp, _ = gen_BS.generate(b['dialog'], b['dialog_state'])
             resp_beam.append(beam_resp)
             logstr.append(' - ' + beam_resp)
             # # diverse beam search
             # logstr.append('[DBS(group=%d, beam=%d, lambda=%.2f)]:' % \
             #               (args.dbs_groups, args.dbs_beam_size, args.dbs_lambda))
-            # dbs_resp, _, gid = gen_DBS.generate(b['clf_idx'], b['dialog'], b['dialog_state'])
+            # dbs_resp, _, gid = gen_DBS.generate(b['dialog'], b['dialog_state'])
             # dbs_gids.append(gid)
             # resp_dbs.append(dbs_resp)
             # logstr.append(' - ' + dbs_resp)
             # # greedy decoding
             # logstr.append('[Greedy]:')
-            # greedy_resp = gen_greedy.generate(b['clf_idx'], b['dialog'], b['dialog_state'])
+            # greedy_resp = gen_greedy.generate(b['dialog'], b['dialog_state'])
             # resp_greedy.append(greedy_resp)
             # logstr.append(' - ' + greedy_resp)
             # logstr.append('=' * 20 + '\n')

@@ -1,7 +1,6 @@
 import torch
 import torch.utils.data as data
 import numpy as np
-from configs import EMOTION_CATES
 
 
 class Dataset(data.Dataset):
@@ -12,6 +11,7 @@ class Dataset(data.Dataset):
         self.contexts = data['context']
         self.targets = data['target']
         self.emotions = data['emotion']
+        self.pred_emotions = data['pred_emotion']
         assert len(self.contexts) == len(self.targets) == len(self.emotions)
         self.indexer = indexer
         self.test = test
@@ -23,6 +23,7 @@ class Dataset(data.Dataset):
         """returns one data pair"""
         item = {}
         item['emotion'] = self.emotions[idx]
+        item['pred_emotion'] = self.pred_emotions[idx]
 
         item['context_text'] = self.contexts[idx]  # dialog utterance list [ str1, str2, ... ]
         encoded_context = self.indexer.encode_text(item['context_text'])  # list [ [wordIdx, ...], ... ]
@@ -32,8 +33,13 @@ class Dataset(data.Dataset):
             context += [self.indexer.SOS_IDX] + c + [self.indexer.EOS_IDX]  # add EOS symbol to every sentence's end
             ds = self.indexer.DS_SPEAKER_IDX if i % 2 == 0 else self.indexer.DS_LISTENER_IDX
             context_state += [ds for _ in range(len(c) + 2)]
-        item['context'] = context
-        item['context_state'] = context_state
+        # prepend emotion label to the context
+        if self.test:
+            encoded_emo = self.indexer.encode_text([item['pred_emotion']])[0]
+        else:
+            encoded_emo = self.indexer.encode_text([item['emotion']])[0]
+        item['context'] = encoded_emo + context
+        item['context_state'] = [self.indexer.DS_PREP_IDX for _ in encoded_emo] + context_state
 
         item['target_text'] = self.targets[idx]  # (str) response
         encoded_target = self.indexer.encode_text([item['target_text']])[0]  # list [wordIdx,...]
@@ -48,8 +54,6 @@ class Dataset(data.Dataset):
         else:
             item['dialog'] = torch.tensor(item['context'] + item['target'], dtype=torch.long)
             item['dialog_state'] = torch.tensor(item['context_state'] + item['target_state'], dtype=torch.long)
-        # index of the classifier symbol which is the SPEAKER's last utterance's EOS.
-        item['clf_idx'] = len(item['context']) - 1
         return item
 
     def filter_max_len(self, max_len):
@@ -61,12 +65,14 @@ class Dataset(data.Dataset):
         self.contexts = self.contexts[filtered]
         self.targets = self.targets[filtered]
         self.emotions = self.emotions[filtered]
+        self.pred_emotions = self.pred_emotions[filtered]
         return filtered
 
     def filter_by_idxs(self, idxs):
         self.contexts = self.contexts[idxs]
         self.targets = self.targets[idxs]
         self.emotions = self.emotions[idxs]
+        self.pred_emotions = self.pred_emotions[idxs]
 
 
 def collate_fn(data, padding_idx):
@@ -89,13 +95,12 @@ def collate_fn(data, padding_idx):
 
     b = {}
     b['data'] = data
-    b['emotion'] = torch.tensor([EMOTION_CATES.index(d['emotion']) for d in data], dtype=torch.long)
+    b['emotion'] = [d['emotion'] for d in data]
 
     dial_batch = [d['dialog'] for d in data]
     dial_state_batch = [d['dialog_state'] for d in data]
     b['dialog'], b['dialog_length'], b['dialog_mask'] = merge(dial_batch)
     b['dialog_state'], _, _ = merge(dial_state_batch)
-    b['clf_idx'] = torch.tensor([d['clf_idx'] for d in data], dtype=torch.long)
     return b
 
 
@@ -111,6 +116,7 @@ def load_dataset(dataset, indexer, batch_size, test=False, shuffle=True):
     d['context'] = np.load('empdial_dataset/sys_dialog_texts.%s.npy' % dataset, allow_pickle=True)
     d['target'] = np.load('empdial_dataset/sys_target_texts.%s.npy' % dataset, allow_pickle=True)
     d['emotion'] = np.load('empdial_dataset/sys_emotion_texts.%s.npy' % dataset, allow_pickle=True)
+    d['pred_emotion'] = np.load('empdial_dataset/fasttest_pred_emotion_texts.%s.npy' % dataset, allow_pickle=True)
     dataset = Dataset(d, indexer, test=test)
     data_loader = get_data_loader(dataset, batch_size, shuffle)
     return dataset, data_loader

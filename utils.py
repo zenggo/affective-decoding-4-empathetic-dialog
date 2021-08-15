@@ -1,13 +1,11 @@
 import numpy as np
 import torch
-import torch.nn.functional as F
 import os
 from datetime import datetime
 import sys
 import re
 import subprocess
 import tempfile
-from sklearn.metrics import accuracy_score
 
 
 ########### common utils ###########
@@ -84,41 +82,6 @@ def stack_input(X, states, indexer):
         X_state = torch.unsqueeze(X_state, -1)
         batch = torch.cat([batch, X_state], dim=-1)
     return batch
-
-
-def cal_clf_acc(clf_logits, y):
-    p = F.softmax(clf_logits, dim=-1)
-    # top1 acc
-    y_pred = torch.argmax(p, dim=-1).to('cpu').tolist()
-    acc_top1 = accuracy_score(y, y_pred)
-    # top5 acc
-    _, y_top = torch.topk(p, k=5, dim=-1)
-    y_top = y_top.to('cpu')
-    acc_top5 = 0
-    for i in range(len(y)):
-        if y[i] in y_top[i].tolist():
-            acc_top5 += 1
-    acc_top5 /= len(y)
-    return acc_top1, acc_top5
-
-
-def cal_clf_res_detail(clf_logits, y, n_cates=32):
-    # [ [n_all, n_correct_top1, n_correct_top5] ]
-    res = [[0, 0, 0] for _ in range(n_cates)]
-    p = F.softmax(clf_logits, dim=-1)
-    # top1
-    y_pred = torch.argmax(p, dim=-1).to('cpu').tolist()
-    # top5
-    _, y_top = torch.topk(p, k=5, dim=-1)
-    y_top = y_top.to('cpu')
-
-    for i in range(len(y)):
-        res[y[i]][0] += 1
-        if y[i] == y_pred[i]:
-            res[y[i]][1] += 1
-        if y[i] in y_top[i].tolist():
-            res[y[i]][2] += 1
-    return res
 
 
 def moses_multi_bleu(hypotheses, references, lowercase=True):
