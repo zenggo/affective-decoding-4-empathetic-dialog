@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from tensorboardX import SummaryWriter
 from optimizer import OpenAIAdam
 from configs import DEFAULT_MODEL_CFG, DEFAULT_OPT_CFG
-from model import LMModel, load_openai_pretrained_model
+from model import ELMModel, load_openai_pretrained_model
 from data_loader import load_dataset
 from utils import make_infinite, stack_input, make_path, \
                 get_time_str, Logger, delete_file, count_parameters
@@ -16,6 +16,11 @@ from indexer import Indexer
 
 def parse_args():
     parser = argparse.ArgumentParser()
+    # model configs
+    parser.add_argument('--beta', type=float, default=1.0)
+    parser.add_argument('--n_emo_embd', type=int, default=768)
+    parser.add_argument('--init_std', type=float, default=0.02)
+    parser.add_argument('--tieSL', default=False, action='store_true')
     # training configs
     parser.add_argument('--n_epoch', type=int, default=3)
     parser.add_argument('--n_batch', type=int, default=8)
@@ -37,14 +42,14 @@ def compute_batch_loss(model, batch):
     # stack token, dialog states and position encoding
     X = stack_input(batch['dialog'], [batch['dialog_state']], indexer)
     X = X.to(device)
-    # compute LM logits and loss
-    lm_logits, _ = model(X)
+    # compute augmented LM logits and loss
+    logits, _ = model(batch['emotion'].to(device), X)
     mask = batch['dialog_mask'].to(device)
     # calculate language modelling loss
     target_shifted = X[:, 1:, 0].contiguous().view(-1)
-    lm_logits_shifted = lm_logits[:, :-1, :]
-    lm_logits_shifted = lm_logits_shifted.contiguous().view(-1, lm_logits.shape[-1])
-    loss = F.cross_entropy(lm_logits_shifted, target_shifted, reduction='none')
+    logits_shifted = logits[:, :-1, :]
+    logits_shifted = logits_shifted.contiguous().view(-1, logits.shape[-1])
+    loss = F.cross_entropy(logits_shifted, target_shifted, reduction='none')
     mask_shifted = mask[:, 1:]
     loss = torch.sum(loss.view(mask_shifted.shape) * mask_shifted) / torch.sum(mask_shifted)
     return loss
@@ -81,6 +86,7 @@ if __name__ == '__main__':
     batch_size = args.n_batch
     # model configs
     cfg = DEFAULT_MODEL_CFG
+    cfg.n_emo_embd = args.n_emo_embd
     # indexer
     indexer = Indexer(cfg.n_ctx)
 
@@ -92,7 +98,8 @@ if __name__ == '__main__':
     devset.filter_max_len(indexer.n_ctx)
 
     # create and load pretrained model
-    model = LMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx)
+    model = ELMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx, indexer,
+                     args.beta, args.init_std, args.tieSL)
     if not args.no_pretrained:
         load_openai_pretrained_model(model.transformer, cfg,
                                      n_special=indexer.n_special,

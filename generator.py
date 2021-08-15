@@ -21,9 +21,10 @@ class Generator:
         else:
             raise Exception("invalid generator role, should be 'listener' or 'speaker'. ")
 
-    def generate(self, dialog, dialog_state, is_start=True):
+    def generate(self, emotion, dialog, dialog_state, is_start=True):
         """
         can only respond 1 instance a time
+        :param emotion:
         :param dialog: 1 x L
         :param dialog_state: 1 x L
         :param is_start: a new sentence or not
@@ -34,10 +35,10 @@ class Generator:
             X = self._append_input(X, self.indexer.SOS_IDX)
         with torch.no_grad():
             self.model.eval()
-            response = self._generate(X)
+            response = self._generate(emotion, X)
         return response
 
-    def _generate(self, X):
+    def _generate(self, emotion, X):
         raise NotImplementedError
 
     def _append_input(self, X, next_token_idx):
@@ -46,15 +47,17 @@ class Generator:
                       .unsqueeze(0).unsqueeze(0)
         return torch.cat((X, next_x.to(self.device)), 1)
 
-    def _cal_next_probs(self, X, token_seq=[], pre_sts=None):
+    def _cal_next_probs(self, emotion, X, token_seq=[], pre_sts=None):
+        emotion = emotion.to(self.device)
         for token_idx in token_seq:
             X = self._append_input(X, token_idx)
-        logits, pre_sts = self.model(X, pre_sts, last_only=True)
+        logits, pre_sts = self.model(emotion, X, pre_sts, last_only=True)
         probs = F.log_softmax(logits[0, 0], dim=-1)
         return probs, pre_sts
 
-    def _cal_next_probs_multi(self, X, token_seqs=[], pre_sts_seq=[]):
+    def _cal_next_probs_multi(self, emotions, X, token_seqs=[], pre_sts_seq=[]):
         assert 0 < len(token_seqs) == len(pre_sts_seq) > 0
+        emotions = emotions.to(self.device)
         # stack X
         X_seq = []
         for seq in token_seqs:
@@ -77,7 +80,7 @@ class Generator:
                 v = torch.cat([_v, v], dim=0)
                 pre_sts[j+1] = (h, k, v)
         # forward
-        logits, pre_sts = self.model(X, pre_sts, last_only=True)
+        logits, pre_sts = self.model(emotions, X, pre_sts, last_only=True)
         probs = F.log_softmax(logits[:, 0], dim=-1)
         # descompose pre_sts
         pre_sts_seq = []
@@ -112,12 +115,12 @@ class GreedyGenerator(Generator):
     def __init__(self, model, max_len, indexer, device):
         super(GreedyGenerator, self).__init__(model, max_len, indexer, device)
 
-    def _generate(self, X):
+    def _generate(self, emotion, X):
         decoded_idx = []
-
+        emotion = emotion.to(self.device)
         pre_sts = None
         for _ in range(self.max_len):
-            logits, pre_sts = self.model(X, pre_sts, last_only=True)
+            logits, pre_sts = self.model(emotion, X, pre_sts, last_only=True)
             next_idx = torch.argmax(logits[0, 0]).item()
             if next_idx == self.indexer.EOS_IDX:
                 break
@@ -132,12 +135,12 @@ class BeamSearchGenerator(Generator):
         super(BeamSearchGenerator, self).__init__(model, max_len, indexer, device)
         self.beam_size = beam_size
 
-    def _generate(self, X):
+    def _generate(self, emotion, X):
         beam_size = self.beam_size
         beams = []  # [ ([idx..], log_prob), ... ]
         dead_beams = []
 
-        next_probs, pre_sts = self._cal_next_probs(X)
+        next_probs, pre_sts = self._cal_next_probs(emotion, X)
         top_probs, top_idxs = next_probs.topk(beam_size)
         for i in range(beam_size):
             beams.append(( [top_idxs[i].item()], top_probs[i].item(), pre_sts ))
@@ -149,7 +152,8 @@ class BeamSearchGenerator(Generator):
             # batch compute the beams
             seqs = [seq for seq, prob, pre_sts in beams]
             pre_sts_seq = [pre_sts for seq, prob, pre_sts in beams]
-            next_probs_seq, pre_sts_seq = self._cal_next_probs_multi(X, seqs, pre_sts_seq)
+            emotions = torch.tensor([emotion.item() for _ in beams]).long()
+            next_probs_seq, pre_sts_seq = self._cal_next_probs_multi(emotions, X, seqs, pre_sts_seq)
             # sorting
             for (seq, prob, pre_sts), next_probs, pre_sts in zip(beams, next_probs_seq, pre_sts_seq):
                 top_probs, top_idxs = next_probs.topk(beam_size)
@@ -197,7 +201,7 @@ class DBSGenerator(Generator):
         if divfunc == 'hamming':
             self.aug_div = self._aug_hamming_div
 
-    def _generate(self, X):
+    def _generate(self, emotion, X):
         beam_size = self.beam_size
         n_groups = self.n_groups
         groups = []  # [ [([idx..], log_prob), ..], ... ]
@@ -206,7 +210,7 @@ class DBSGenerator(Generator):
         dead_beams = []
 
         # time=0
-        next_probs, pre_sts = self._cal_next_probs(X)
+        next_probs, pre_sts = self._cal_next_probs(emotion, X)
         top_probs, top_idxs = next_probs.topk(beam_size * n_groups)
         for g in range(n_groups):
             for b in range(beam_size):
@@ -224,7 +228,8 @@ class DBSGenerator(Generator):
                 for seq, prob, pre_sts in beams:
                     seqs.append(seq)
                     pre_sts_seq.append(pre_sts)
-            next_probs_seq, pre_sts_seq = self._cal_next_probs_multi(X, seqs, pre_sts_seq)
+            emotions = torch.tensor([emotion.item() for _ in seqs]).long()
+            next_probs_seq, pre_sts_seq = self._cal_next_probs_multi(emotions, X, seqs, pre_sts_seq)
             next_probs_seq.reverse()
             pre_sts_seq.reverse()
 

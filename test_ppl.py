@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from configs import DEFAULT_MODEL_CFG
-from model import LMModel
+from model import ELMModel
 from indexer import Indexer
 from data_loader import load_dataset
 from utils import stack_input, get_time_str, count_parameters
@@ -13,6 +13,10 @@ from time import time
 
 def parse_args():
     parser = argparse.ArgumentParser()
+    # model configs
+    parser.add_argument('--beta', type=float, default=1.0)
+    parser.add_argument('--n_emo_embd', type=int, default=768)
+    parser.add_argument('--tieSL', default=False, action='store_true')
     # other configs
     parser.add_argument('--target_only', default=False, action='store_true')
     parser.add_argument('--n_batch', type=int, default=8)
@@ -27,18 +31,18 @@ def compute_batch_loss(model, batch):
     # stack token, dialog states and position encoding
     X = stack_input(batch['dialog'], [batch['dialog_state']], indexer)
     X = X.to(device)
-    # compute LM logits and loss
-    lm_logits, _ = model(X)
+    # compute augmented LM logits and loss
+    logits, _ = model(batch['emotion'].to(device), X)
     mask = batch['dialog_mask'].to(device)
     if args.target_only:
         for i in range(mask.shape[0]):
             lastspeidx = mask.shape[1] - 1 - batch['dialog_state'][i].tolist()[::-1].index(indexer.DS_SPEAKER_IDX)
-            mask[i, :lastspeidx+2] = 0  # the context and SOS of target are excluded
+            mask[i, :lastspeidx + 2] = 0  # the context and SOS of target are excluded
     # calculate language modelling loss
     target_shifted = X[:, 1:, 0].contiguous().view(-1)
-    lm_logits_shifted = lm_logits[:, :-1, :]
-    lm_logits_shifted = lm_logits_shifted.contiguous().view(-1, lm_logits.shape[-1])
-    loss = F.cross_entropy(lm_logits_shifted, target_shifted, reduction='none')
+    logits_shifted = logits[:, :-1, :]
+    logits_shifted = logits_shifted.contiguous().view(-1, logits.shape[-1])
+    loss = F.cross_entropy(logits_shifted, target_shifted, reduction='none')
     mask_shifted = mask[:, 1:]
     loss = torch.sum(loss.view(mask_shifted.shape) * mask_shifted) / torch.sum(mask_shifted)
     return loss
@@ -58,6 +62,7 @@ if __name__ == '__main__':
     batch_size = args.n_batch
     # model configs
     cfg = DEFAULT_MODEL_CFG
+    cfg.n_emo_embd = args.n_emo_embd
     # indexer
     indexer = Indexer(cfg.n_ctx)
 
@@ -68,9 +73,9 @@ if __name__ == '__main__':
     if args.testid_sample_path is not None:
         testset.filter_by_idxs(np.load(args.testid_sample_path))
 
-
     # load model
-    model = LMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx)
+    model = ELMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx, indexer,
+                     args.beta, tieSL=args.tieSL)
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     print('Model params: %d' % count_parameters(model))
     model.to(device)

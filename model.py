@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
+from configs import EMOTION_CATES
 
 
 
@@ -44,11 +45,55 @@ class LMModel(nn.Module):
         """
         :param x: the input sequence
         :param pre_sts: to prevent recalculation. the prefix sequence's hidden states and Q,V saved in previous turn.
+        :param last_only: only calculate the logits for the last position (only for generation)
         :return: logits of vocab words
         """
         sts = self.transformer(x, pre_sts)
         lm_logits = self.lm_head(sts[-1][0], last_only)
         return lm_logits, sts
+
+
+class ELMModel(LMModel):
+    """ Transformer with language model head and Emphathy head """
+    def __init__(self, cfg, n_vocab, n_special, n_ctx, indexer, beta=1.0, init_std=0.02, tieSL=False):
+        super(ELMModel, self).__init__(cfg, n_vocab, n_special, n_ctx)
+        self.indexer = indexer
+        self.beta = beta
+        # emotion embeddings for Speaker and Listener
+        n_emo = len(EMOTION_CATES)
+        self.ES = nn.Embedding(n_emo, cfg.n_emo_embd)
+        self.EL = nn.Embedding(n_emo, cfg.n_emo_embd)
+        # word emotion embeddings for Speaker and Listener
+        self.VS = nn.Linear(cfg.n_emo_embd, n_vocab+2, bias=False)  # and SOS, EOS
+        self.VL = nn.Linear(cfg.n_emo_embd, n_vocab+2, bias=False)
+        # dropout
+        self.drop = nn.Dropout(cfg.embd_pdrop)
+        # weight init
+        nn.init.normal_(self.ES.weight, std=init_std)
+        nn.init.normal_(self.EL.weight, std=init_std)
+        nn.init.normal_(self.VS.weight, std=init_std)
+        nn.init.normal_(self.VL.weight, std=init_std)
+        if tieSL:
+            self.EL.weight = self.ES.weight
+            self.VL.weight = self.VS.weight
+
+    def forward(self, emotions, x, pre_sts=None, last_only=False):
+        lm_logits, sts = super().forward(x, pre_sts, last_only)
+        em_bias = torch.zeros(lm_logits.shape).to(next(self.parameters()).device)
+        x_ds = x[:, -1:, 2] if last_only else x[:, :, 2]  # dialog states
+        for i in range(x.shape[0]):
+            emotion = emotions[i]
+            es = self.ES(emotion)
+            el = self.EL(emotion)
+            bias_s = self.VS(self.drop(es))
+            bias_l = self.VL(self.drop(el))
+            em_bias[i, x_ds[i]==self.indexer.DS_SPEAKER_IDX] = bias_s
+            em_bias[i, x_ds[i]==self.indexer.DS_LISTENER_IDX] = bias_l
+        aug_logits = lm_logits + self.beta * em_bias
+        return aug_logits, sts
+
+    def set_beta(self, beta):
+        self.beta = beta
 
 
 ############## components ########################

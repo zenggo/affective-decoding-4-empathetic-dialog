@@ -4,7 +4,7 @@ import random
 import numpy as np
 import torch
 from configs import DEFAULT_MODEL_CFG
-from model import LMModel
+from model import ELMModel
 from indexer import Indexer
 from data_loader import load_dataset
 from utils import get_time_str, Logger, count_parameters, moses_multi_bleu
@@ -14,6 +14,10 @@ from generator import GreedyGenerator, BeamSearchGenerator, DBSGenerator
 
 def parse_args():
     parser = argparse.ArgumentParser()
+    # model configs
+    parser.add_argument('--beta', type=float, default=1.0)
+    parser.add_argument('--n_emo_embd', type=int, default=768)
+    parser.add_argument('--tieSL', default=False, action='store_true')
     # generation configs
     parser.add_argument('--max_gen_len', type=int, default=50)
     parser.add_argument('--beam_size', type=int, default=5)
@@ -21,7 +25,7 @@ def parse_args():
     parser.add_argument('--dbs_groups', type=int, default=5)
     parser.add_argument('--dbs_lambda', type=int, default=0.5)
     # other configs
-    parser.add_argument('--model_path', type=str, default='save/baseline/transfo')
+    parser.add_argument('--model_path', type=str, default='save/elm_1')
     parser.add_argument('--print_to', type=str, default='file')
     parser.add_argument('--log_dir', type=str, default='log/')
     parser.add_argument('--log_file', type=str, default='test.output')
@@ -46,6 +50,7 @@ if __name__ == '__main__':
 
     # model configs
     cfg = DEFAULT_MODEL_CFG
+    cfg.n_emo_embd = args.n_emo_embd
     # indexer
     indexer = Indexer(cfg.n_ctx)
 
@@ -57,7 +62,8 @@ if __name__ == '__main__':
         testset.filter_by_idxs(np.load(args.testid_sample_path))
 
     # load model
-    model = LMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx)
+    model = ELMModel(cfg, indexer.n_vocab, indexer.n_special, indexer.n_ctx, indexer,
+                     args.beta, tieSL=args.tieSL)
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     logger.log('Model params: %d' % count_parameters(model))
     model.to(device)
@@ -79,7 +85,7 @@ if __name__ == '__main__':
 
         for (i, b) in enumerate(data_loader):
             logstr = []
-            logstr.append('[Context]:')
+            logstr.append('[Context(%s)]:' % b['data'][0]['emotion'])
             for c in b['data'][0]['context_text']:
                 logstr.append(' - ' + c)
             logstr.append('[Golden]:')
@@ -88,19 +94,19 @@ if __name__ == '__main__':
             resp_golden.append(golden)
             # beam search
             logstr.append('[Beam=%d]:' % args.beam_size)
-            beam_resp, _ = gen_BS.generate(b['dialog'], b['dialog_state'])
+            beam_resp, _ = gen_BS.generate(b['emotion'], b['dialog'], b['dialog_state'])
             resp_beam.append(beam_resp)
             logstr.append(' - ' + beam_resp)
-            # # diverse beam search
+            # diverse beam search
             # logstr.append('[DBS(group=%d, beam=%d, lambda=%.2f)]:' % \
             #               (args.dbs_groups, args.dbs_beam_size, args.dbs_lambda))
-            # dbs_resp, _, gid = gen_DBS.generate(b['dialog'], b['dialog_state'])
+            # dbs_resp, _, gid = gen_DBS.generate(b['emotion'], b['dialog'], b['dialog_state'])
             # dbs_gids.append(gid)
             # resp_dbs.append(dbs_resp)
             # logstr.append(' - ' + dbs_resp)
-            # # greedy decoding
+            # greedy decoding
             # logstr.append('[Greedy]:')
-            # greedy_resp = gen_greedy.generate(b['dialog'], b['dialog_state'])
+            # greedy_resp = gen_greedy.generate(b['emotion'], b['dialog'], b['dialog_state'])
             # resp_greedy.append(greedy_resp)
             # logstr.append(' - ' + greedy_resp)
             # logstr.append('=' * 20 + '\n')
