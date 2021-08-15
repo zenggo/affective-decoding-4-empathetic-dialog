@@ -1,6 +1,7 @@
 import torch
 import torch.utils.data as data
 import numpy as np
+from configs import EMOTION_CATES
 
 
 class Dataset(data.Dataset):
@@ -47,6 +48,8 @@ class Dataset(data.Dataset):
         else:
             item['dialog'] = torch.tensor(item['context'] + item['target'], dtype=torch.long)
             item['dialog_state'] = torch.tensor(item['context_state'] + item['target_state'], dtype=torch.long)
+        # index of the classifier symbol which is the SPEAKER's last utterance's EOS.
+        item['clf_idx'] = len(item['context']) - 1
         return item
 
     def filter_max_len(self, max_len):
@@ -86,12 +89,13 @@ def collate_fn(data, padding_idx):
 
     b = {}
     b['data'] = data
-    b['emotion'] = [d['emotion'] for d in data]
+    b['emotion'] = torch.tensor([EMOTION_CATES.index(d['emotion']) for d in data], dtype=torch.long)
 
     dial_batch = [d['dialog'] for d in data]
     dial_state_batch = [d['dialog_state'] for d in data]
     b['dialog'], b['dialog_length'], b['dialog_mask'] = merge(dial_batch)
     b['dialog_state'], _, _ = merge(dial_state_batch)
+    b['clf_idx'] = torch.tensor([d['clf_idx'] for d in data], dtype=torch.long)
     return b
 
 

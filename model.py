@@ -9,7 +9,9 @@ import re
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.parameter import Parameter
+from configs import EMOTION_CATES
 
 
 
@@ -44,11 +46,71 @@ class LMModel(nn.Module):
         """
         :param x: the input sequence
         :param pre_sts: to prevent recalculation. the prefix sequence's hidden states and Q,V saved in previous turn.
+        :param last_only: only calculate the logits for the last position (only for generation)
         :return: logits of vocab words
         """
         sts = self.transformer(x, pre_sts)
         lm_logits = self.lm_head(sts[-1][0], last_only)
         return lm_logits, sts
+
+
+class ELMModel(LMModel):
+    """ Transformer with language model head and Emphathy head """
+    def __init__(self, cfg, n_vocab, n_special, n_ctx, indexer, beta=1.0, init_std=0.02, tieSL=False):
+        super(ELMModel, self).__init__(cfg, n_vocab, n_special, n_ctx)
+        self.indexer = indexer
+        self.beta = beta
+        # emotion embeddings for Speaker and Listener
+        n_emo = len(EMOTION_CATES)
+        self.ES = nn.Linear(n_emo, cfg.n_emo_embd, bias=False)
+        self.EL = nn.Linear(n_emo, cfg.n_emo_embd, bias=False)
+        # word emotion embeddings for Speaker and Listener
+        self.VS = nn.Linear(cfg.n_emo_embd, n_vocab+2, bias=False)  # and SOS, EOS
+        self.VL = nn.Linear(cfg.n_emo_embd, n_vocab+2, bias=False)
+        # dropout
+        self.drop = nn.Dropout(cfg.embd_pdrop)
+        # weight init
+        nn.init.normal_(self.ES.weight, std=init_std)
+        nn.init.normal_(self.EL.weight, std=init_std)
+        nn.init.normal_(self.VS.weight, std=init_std)
+        nn.init.normal_(self.VL.weight, std=init_std)
+        if tieSL:
+            self.EL.weight = self.ES.weight
+            self.VL.weight = self.VS.weight
+        # emotion classifier
+        self.clf_head = ClfHead(indexer.EOS_IDX, cfg, n_emo)
+
+    def forward(self, clf_idx, x, pre_sts=None, last_only=False):
+        sts = self.transformer(x, pre_sts)
+        last_hs = sts[-1][0]  # hidden states of the last layer
+        # lm
+        lm_logits = self.lm_head(last_hs, last_only)
+        device = next(self.parameters()).device
+        if type(clf_idx) == list:
+            # here clf_idx is the specified emotions
+            p_emo = torch.zeros((x.shape[0], len(EMOTION_CATES)))
+            p_emo[torch.arange(x.shape[0]), clf_idx] = 1.0
+            p_emo = p_emo.to(device)
+            clf_logits = None
+        else:
+            # predict emotion prob distribution
+            clf_sts = last_hs[torch.arange(x.shape[0]), clf_idx.to(device)]
+            clf_logits = self.clf_head(clf_sts)
+            p_emo = F.softmax(clf_logits, dim=-1)
+        # calculate bias
+        em_bias = torch.zeros(lm_logits.shape).to(device)
+        x_ds = x[:, -1:, 2] if last_only else x[:, :, 2]  # dialog states
+        for i in range(x.shape[0]):
+            pe = p_emo[i:i+1]
+            # the averaged emotion vector
+            es = self.ES(pe)
+            el = self.EL(pe)
+            bias_s = self.VS(self.drop(es))
+            bias_l = self.VL(self.drop(el))
+            em_bias[i, x_ds[i]==self.indexer.DS_SPEAKER_IDX] = bias_s
+            em_bias[i, x_ds[i]==self.indexer.DS_LISTENER_IDX] = bias_l
+        lm_logits = lm_logits + self.beta * em_bias
+        return lm_logits, sts, clf_logits
 
 
 ############## components ########################
@@ -68,6 +130,33 @@ class LMHead(nn.Module):
             h = h[:, -1:, :]
         lm_logits = self.decoder(h)
         return lm_logits[:, :, :self.n_decoding_vocab]
+
+
+class ClfHead(nn.Module):
+    def __init__(self, clf_token, cfg, n_class):
+        super(ClfHead, self).__init__()
+        self.clf_token = clf_token
+        self.dropout = nn.Dropout(cfg.clf_pdrop)
+        n_hs = [cfg.n_embd] + cfg.clf_hs + [n_class]
+        mlp = []
+        for i in range(len(n_hs)-1):
+            n_input = n_hs[i]
+            n_output = n_hs[i+1]
+            l = nn.Linear(n_input, n_output)
+            nn.init.normal_(l.weight, std=0.02)
+            nn.init.normal_(l.bias, 0)
+            mlp.append(l)
+        self.mlp = nn.ModuleList(mlp)
+
+    def forward(self, h):
+        for i in range(len(self.mlp)-1):
+            layer = self.mlp[i]
+            h = self.dropout(h)
+            h = layer(h)
+            h = F.relu(h)
+        output_layer = self.mlp[-1]
+        clf_logits = output_layer(self.dropout(h))
+        return clf_logits
 
 
 class TransformerModel(nn.Module):
