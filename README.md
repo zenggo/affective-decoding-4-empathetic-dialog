@@ -1,4 +1,4 @@
-Code of paper Affective Decoding for Empathetic Response Generation
+Code of paper [Affective Decoding for Empathetic Response Generation](https://arxiv.org/abs/2108.08102)
 
 5 branches for different experiment settings: master(Transfo), adde(AD, AD+DE), adm(AD + multi-task learning), tml(Transfo + multi-task learning), prepend (Transfo + prepending emotion label predicted by fasttext).
 
